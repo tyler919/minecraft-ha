@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Minecraft Server",
+        "description": "Set up a new Minecraft server to receive webhook data.\n\nAfter setup, you'll get a webhook URL to configure in your Minecraft mod.",
+        "data": {
+          "server_name": "Server Name"
+        },
+        "data_description": {
+          "server_name": "A friendly name for this Minecraft server (e.g., 'Survival', 'Creative', 'SMP')"
+        }
+      }
+    },
+    "error": {
+      "server_exists": "A server with this name already exists"
+    },
+    "abort": {
+      "already_configured": "This server is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Minecraft Server Configuration",
+        "description": "**Webhook URL:**\n`{webhook_url}`\n\nConfigure your Minecraft mod to send POST requests to this URL with JSON data.\n\n**Webhook ID:** `{webhook_id}`"
+      }
+    }
+  }
+}
