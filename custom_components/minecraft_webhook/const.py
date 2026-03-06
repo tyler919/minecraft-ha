@@ -10,6 +10,8 @@ CONF_WEBHOOK_ID = "webhook_id"
 DATA_SERVERS = "servers"
 DATA_SENSORS = "sensors"
 DATA_COORDINATOR = "coordinator"
+DATA_COMMANDS = "commands"
+DATA_COMPUTERS = "computers"
 
 # Webhook
 WEBHOOK_PATH = "/api/webhook/minecraft_{webhook_id}"

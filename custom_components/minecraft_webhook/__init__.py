@@ -1,20 +1,27 @@
-"""The Minecraft Webhook integration."""
+"""The Minecraft Webhook integration for CC: Tweaked."""
 from __future__ import annotations
 
+import json
 import logging
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+from aiohttp import web
 from homeassistant.components import webhook
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+import voluptuous as vol
 
 from .const import (
     CONF_SERVER_NAME,
     CONF_WEBHOOK_ID,
+    DATA_COMMANDS,
+    DATA_COMPUTERS,
     DATA_SENSORS,
     DATA_SERVERS,
     DEFAULT_ICON,
@@ -22,7 +29,6 @@ from .const import (
     DEFAULT_UNITS,
     DOMAIN,
     SENSOR_TYPE_BOOLEAN,
-    SENSOR_TYPE_DICT,
     SENSOR_TYPE_LIST,
     SENSOR_TYPE_NUMBER,
     SENSOR_TYPE_STRING,
@@ -36,10 +42,27 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 SIGNAL_SENSOR_UPDATE = f"{DOMAIN}_sensor_update_{{server_id}}"
 SIGNAL_NEW_SENSOR = f"{DOMAIN}_new_sensor_{{server_id}}"
 
+# Service constants
+SERVICE_SEND_COMMAND = "send_command"
+SERVICE_SET_OUTPUT = "set_output"
+SERVICE_CLEAR_COMMANDS = "clear_commands"
+
+ATTR_SERVER = "server"
+ATTR_COMPUTER_ID = "computer_id"
+ATTR_COMMAND = "command"
+ATTR_DATA = "data"
+ATTR_OUTPUT_NAME = "output_name"
+ATTR_VALUE = "value"
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Minecraft Webhook from a config entry."""
-    hass.data.setdefault(DOMAIN, {DATA_SERVERS: {}, DATA_SENSORS: {}})
+    hass.data.setdefault(DOMAIN, {
+        DATA_SERVERS: {},
+        DATA_SENSORS: {},
+        DATA_COMMANDS: defaultdict(lambda: defaultdict(list)),
+        DATA_COMPUTERS: defaultdict(dict),
+    })
 
     server_name = entry.data[CONF_SERVER_NAME]
     webhook_id = entry.data[CONF_WEBHOOK_ID]
@@ -55,13 +78,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize sensors storage for this server
     hass.data[DOMAIN][DATA_SENSORS][entry.entry_id] = {}
 
-    # Register webhook
+    # Register webhook with custom handler that returns responses
     webhook.async_register(
         hass,
         DOMAIN,
         f"Minecraft - {server_name}",
         webhook_id,
         _async_handle_webhook,
+        allowed_methods=["GET", "POST"],
     )
 
     _LOGGER.info(
@@ -76,12 +100,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.entry_id)},
         name=f"Minecraft - {server_name}",
-        manufacturer="Minecraft",
-        model="Java Edition Server",
+        manufacturer="CC: Tweaked",
+        model="ComputerCraft Computer",
     )
 
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Register services (only once)
+    if not hass.services.has_service(DOMAIN, SERVICE_SEND_COMMAND):
+        await _async_register_services(hass)
 
     return True
 
@@ -104,18 +132,121 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def _async_register_services(hass: HomeAssistant) -> None:
+    """Register integration services."""
+
+    async def async_send_command(call: ServiceCall) -> None:
+        """Send a command to a CC: Tweaked computer."""
+        server = call.data[ATTR_SERVER]
+        computer_id = call.data[ATTR_COMPUTER_ID]
+        command = call.data[ATTR_COMMAND]
+        data = call.data.get(ATTR_DATA, {})
+
+        # Find the server entry
+        entry_id = _find_server_entry(hass, server)
+        if entry_id is None:
+            _LOGGER.error("Server '%s' not found", server)
+            return
+
+        # Queue the command
+        cmd = {
+            "type": "command",
+            "command": command,
+            "data": data,
+            "timestamp": datetime.now().isoformat(),
+        }
+        hass.data[DOMAIN][DATA_COMMANDS][entry_id][computer_id].append(cmd)
+        _LOGGER.debug("Queued command for computer %s: %s", computer_id, command)
+
+    async def async_set_output(call: ServiceCall) -> None:
+        """Set an output value for a CC: Tweaked computer to read."""
+        server = call.data[ATTR_SERVER]
+        computer_id = call.data[ATTR_COMPUTER_ID]
+        output_name = call.data[ATTR_OUTPUT_NAME]
+        value = call.data[ATTR_VALUE]
+
+        # Find the server entry
+        entry_id = _find_server_entry(hass, server)
+        if entry_id is None:
+            _LOGGER.error("Server '%s' not found", server)
+            return
+
+        # Store the output value
+        if entry_id not in hass.data[DOMAIN][DATA_COMPUTERS]:
+            hass.data[DOMAIN][DATA_COMPUTERS][entry_id] = {}
+        if computer_id not in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]:
+            hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id] = {"outputs": {}}
+
+        hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id]["outputs"][output_name] = value
+        _LOGGER.debug("Set output %s=%s for computer %s", output_name, value, computer_id)
+
+    async def async_clear_commands(call: ServiceCall) -> None:
+        """Clear pending commands for a computer."""
+        server = call.data[ATTR_SERVER]
+        computer_id = call.data.get(ATTR_COMPUTER_ID)
+
+        entry_id = _find_server_entry(hass, server)
+        if entry_id is None:
+            _LOGGER.error("Server '%s' not found", server)
+            return
+
+        if computer_id:
+            hass.data[DOMAIN][DATA_COMMANDS][entry_id][computer_id] = []
+            _LOGGER.debug("Cleared commands for computer %s", computer_id)
+        else:
+            hass.data[DOMAIN][DATA_COMMANDS][entry_id] = defaultdict(list)
+            _LOGGER.debug("Cleared all commands for server %s", server)
+
+    # Register services with schemas
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SEND_COMMAND,
+        async_send_command,
+        schema=vol.Schema({
+            vol.Required(ATTR_SERVER): cv.string,
+            vol.Required(ATTR_COMPUTER_ID): cv.string,
+            vol.Required(ATTR_COMMAND): cv.string,
+            vol.Optional(ATTR_DATA, default={}): dict,
+        }),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_OUTPUT,
+        async_set_output,
+        schema=vol.Schema({
+            vol.Required(ATTR_SERVER): cv.string,
+            vol.Required(ATTR_COMPUTER_ID): cv.string,
+            vol.Required(ATTR_OUTPUT_NAME): cv.string,
+            vol.Required(ATTR_VALUE): vol.Any(str, int, float, bool, list, dict),
+        }),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_COMMANDS,
+        async_clear_commands,
+        schema=vol.Schema({
+            vol.Required(ATTR_SERVER): cv.string,
+            vol.Optional(ATTR_COMPUTER_ID): cv.string,
+        }),
+    )
+
+
+def _find_server_entry(hass: HomeAssistant, server_name: str) -> str | None:
+    """Find entry ID by server name."""
+    for entry_id, server_data in hass.data[DOMAIN][DATA_SERVERS].items():
+        if server_data["name"].lower() == server_name.lower():
+            return entry_id
+    return None
+
+
 async def _async_handle_webhook(
     hass: HomeAssistant,
     webhook_id: str,
-    request,
-) -> None:
-    """Handle incoming webhook data from Minecraft."""
-    try:
-        data = await request.json()
-    except ValueError:
-        _LOGGER.error("Received invalid JSON from Minecraft webhook")
-        return
-
+    request: web.Request,
+) -> web.Response:
+    """Handle incoming webhook requests from CC: Tweaked."""
     # Find the entry for this webhook
     entry_id = None
     server_name = None
@@ -127,10 +258,75 @@ async def _async_handle_webhook(
 
     if entry_id is None:
         _LOGGER.error("Received webhook for unknown server: %s", webhook_id)
-        return
+        return web.Response(status=404, text="Server not found")
+
+    # Handle GET request - return pending commands
+    if request.method == "GET":
+        return await _handle_get_commands(hass, entry_id, request)
+
+    # Handle POST request - receive data
+    if request.method == "POST":
+        return await _handle_post_data(hass, entry_id, server_name, request)
+
+    return web.Response(status=405, text="Method not allowed")
+
+
+async def _handle_get_commands(
+    hass: HomeAssistant,
+    entry_id: str,
+    request: web.Request,
+) -> web.Response:
+    """Handle GET request - return pending commands for a computer."""
+    computer_id = request.query.get("computer_id", request.query.get("id", "default"))
+
+    # Get pending commands
+    commands = hass.data[DOMAIN][DATA_COMMANDS][entry_id].get(computer_id, [])
+
+    # Get stored outputs
+    outputs = {}
+    if entry_id in hass.data[DOMAIN][DATA_COMPUTERS]:
+        if computer_id in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]:
+            outputs = hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id].get("outputs", {})
+
+    # Build response
+    response_data = {
+        "commands": commands,
+        "outputs": outputs,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    # Clear commands after sending (they've been retrieved)
+    hass.data[DOMAIN][DATA_COMMANDS][entry_id][computer_id] = []
 
     _LOGGER.debug(
-        "Received webhook data for server '%s': %s",
+        "Returning %d commands and %d outputs for computer %s",
+        len(commands),
+        len(outputs),
+        computer_id,
+    )
+
+    return web.json_response(response_data)
+
+
+async def _handle_post_data(
+    hass: HomeAssistant,
+    entry_id: str,
+    server_name: str,
+    request: web.Request,
+) -> web.Response:
+    """Handle POST request - receive data from CC: Tweaked."""
+    try:
+        data = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        _LOGGER.error("Received invalid JSON from Minecraft webhook")
+        return web.Response(status=400, text="Invalid JSON")
+
+    # Extract computer_id if provided
+    computer_id = data.pop("_computer_id", data.pop("computer_id", "default"))
+
+    _LOGGER.debug(
+        "Received data from computer '%s' on server '%s': %s",
+        computer_id,
         server_name,
         data,
     )
@@ -139,61 +335,86 @@ async def _async_handle_webhook(
     hass.data[DOMAIN][DATA_SERVERS][entry_id]["last_update"] = datetime.now()
     hass.data[DOMAIN][DATA_SERVERS][entry_id]["data"] = data
 
+    # Track computer
+    if entry_id not in hass.data[DOMAIN][DATA_COMPUTERS]:
+        hass.data[DOMAIN][DATA_COMPUTERS][entry_id] = {}
+    if computer_id not in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]:
+        hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id] = {"outputs": {}}
+    hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id]["last_seen"] = datetime.now()
+
     # Process the data and create/update sensors
-    await _process_webhook_data(hass, entry_id, data)
+    await _process_webhook_data(hass, entry_id, computer_id, data)
+
+    # Return any pending commands immediately
+    commands = hass.data[DOMAIN][DATA_COMMANDS][entry_id].get(computer_id, [])
+    outputs = hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id].get("outputs", {})
+
+    response_data = {
+        "status": "ok",
+        "commands": commands,
+        "outputs": outputs,
+    }
+
+    # Clear commands after sending
+    hass.data[DOMAIN][DATA_COMMANDS][entry_id][computer_id] = []
+
+    return web.json_response(response_data)
 
 
 async def _process_webhook_data(
     hass: HomeAssistant,
     entry_id: str,
+    computer_id: str,
     data: dict[str, Any],
-    prefix: str = "",
 ) -> None:
     """Process webhook data and create/update sensors."""
     sensors = hass.data[DOMAIN][DATA_SENSORS][entry_id]
     new_sensors = []
 
+    # Add computer_id prefix if not default
+    prefix = f"{computer_id}_" if computer_id != "default" else ""
+
     def flatten_data(d: dict[str, Any], parent_key: str = "") -> dict[str, Any]:
         """Flatten nested dictionary."""
         items = {}
         for key, value in d.items():
+            # Skip internal keys
+            if key.startswith("_"):
+                continue
+
             new_key = f"{parent_key}_{key}" if parent_key else key
             new_key = new_key.lower().replace(" ", "_").replace("-", "_")
+            full_key = f"{prefix}{new_key}"
 
             if isinstance(value, dict):
-                # For nested dicts, flatten them
                 items.update(flatten_data(value, new_key))
             elif isinstance(value, list):
-                # Store lists as the count with full list in attributes
-                items[new_key] = {
+                items[full_key] = {
                     "value": len(value),
                     "type": SENSOR_TYPE_LIST,
                     "raw": value,
                 }
             elif isinstance(value, bool):
-                items[new_key] = {
+                items[full_key] = {
                     "value": value,
                     "type": SENSOR_TYPE_BOOLEAN,
                 }
             elif isinstance(value, (int, float)):
-                items[new_key] = {
+                items[full_key] = {
                     "value": value,
                     "type": SENSOR_TYPE_NUMBER,
                 }
             else:
-                items[new_key] = {
+                items[full_key] = {
                     "value": str(value) if value is not None else None,
                     "type": SENSOR_TYPE_STRING,
                 }
         return items
 
-    # Flatten the incoming data
     flat_data = flatten_data(data)
 
-    # Update or create sensors
     for sensor_key, sensor_data in flat_data.items():
         if sensor_key not in sensors:
-            # New sensor discovered
             sensors[sensor_key] = {
                 "key": sensor_key,
                 "type": sensor_data["type"],
@@ -201,15 +422,14 @@ async def _process_webhook_data(
                 "icon": _get_icon_for_key(sensor_key),
                 "unit": _get_unit_for_key(sensor_key),
                 "attributes": sensor_data.get("raw"),
+                "computer_id": computer_id,
             }
             new_sensors.append(sensor_key)
             _LOGGER.info("Discovered new sensor: %s", sensor_key)
         else:
-            # Update existing sensor
             sensors[sensor_key]["value"] = sensor_data["value"]
             sensors[sensor_key]["attributes"] = sensor_data.get("raw")
 
-    # Signal new sensors to be created
     if new_sensors:
         async_dispatcher_send(
             hass,
@@ -217,7 +437,6 @@ async def _process_webhook_data(
             new_sensors,
         )
 
-    # Signal all sensors to update
     async_dispatcher_send(
         hass,
         SIGNAL_SENSOR_UPDATE.format(server_id=entry_id),
@@ -226,29 +445,21 @@ async def _process_webhook_data(
 
 def _get_icon_for_key(key: str) -> str:
     """Get an appropriate icon for a sensor key."""
-    # Check for exact match first
     if key in DEFAULT_ICONS:
         return DEFAULT_ICONS[key]
-
-    # Check if key contains any known keywords
     for keyword, icon in DEFAULT_ICONS.items():
         if keyword in key:
             return icon
-
     return DEFAULT_ICON
 
 
 def _get_unit_for_key(key: str) -> str | None:
     """Get an appropriate unit for a sensor key."""
-    # Check for exact match first
     if key in DEFAULT_UNITS:
         return DEFAULT_UNITS[key]
-
-    # Check if key contains any known keywords
     for keyword, unit in DEFAULT_UNITS.items():
         if keyword in key:
             return unit
-
     return None
 
 
