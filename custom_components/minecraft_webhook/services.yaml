@@ -1,6 +1,6 @@
 send_command:
   name: Send Command
-  description: Send a command to a CC: Tweaked computer. The computer will receive it on its next poll.
+  description: "Send a command to a CC: Tweaked computer. The computer will receive it on its next poll."
   fields:
     server:
       name: Server
