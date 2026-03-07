@@ -1,0 +1,84 @@
+send_command:
+  name: Send Command
+  description: Send a command to a CC: Tweaked computer. The computer will receive it on its next poll.
+  fields:
+    server:
+      name: Server
+      description: The name of the Minecraft server (as set during integration setup).
+      required: true
+      example: "Survival"
+      selector:
+        text:
+    computer_id:
+      name: Computer ID
+      description: The computer_id the CC computer sends in its payload.
+      required: true
+      example: "computer_1"
+      selector:
+        text:
+    command:
+      name: Command
+      description: The command string the computer will act on.
+      required: true
+      example: "reboot"
+      selector:
+        text:
+    data:
+      name: Data
+      description: Optional extra data passed along with the command.
+      required: false
+      example: '{"message": "Hello!"}'
+      selector:
+        object:
+
+set_output:
+  name: Set Output
+  description: Store a named value for a CC computer to read on its next poll.
+  fields:
+    server:
+      name: Server
+      description: The name of the Minecraft server.
+      required: true
+      example: "Survival"
+      selector:
+        text:
+    computer_id:
+      name: Computer ID
+      description: The computer_id the CC computer sends in its payload.
+      required: true
+      example: "computer_1"
+      selector:
+        text:
+    output_name:
+      name: Output Name
+      description: The key name the computer will read from the outputs table.
+      required: true
+      example: "target_temperature"
+      selector:
+        text:
+    value:
+      name: Value
+      description: The value to store (string, number, boolean, list, or object).
+      required: true
+      example: "72"
+      selector:
+        text:
+
+clear_commands:
+  name: Clear Commands
+  description: Clear the pending command queue for a computer or an entire server.
+  fields:
+    server:
+      name: Server
+      description: The name of the Minecraft server.
+      required: true
+      example: "Survival"
+      selector:
+        text:
+    computer_id:
+      name: Computer ID
+      description: The computer to clear commands for. Omit to clear all computers on the server.
+      required: false
+      example: "computer_1"
+      selector:
+        text:
