@@ -31,6 +31,10 @@ from .const import (
     DEFAULT_ICONS,
     DEFAULT_UNITS,
     DOMAIN,
+    ENERGY_SENSOR_KEYWORD,
+    FE_ENERGY_UNIT,
+    FE_POWER_UNIT,
+    POWER_SENSOR_KEYWORDS,
     PROTECTED_LABEL,
     READY_DELAY_SECONDS,
     SENSOR_TYPE_BOOLEAN,
@@ -489,6 +493,7 @@ async def _process_webhook_data(
                 "value": sensor_data["value"],
                 "icon": _get_icon_for_key(sensor_key),
                 "unit": _get_unit_for_key(sensor_key),
+                "device_class": _get_device_class_for_key(sensor_key),
                 "attributes": sensor_data.get("raw"),
                 "computer_id": computer_id,
                 "last_seen": datetime.now(),
@@ -579,8 +584,28 @@ def _get_icon_for_key(key: str) -> str:
     return DEFAULT_ICON
 
 
+def _get_device_class_for_key(key: str) -> str | None:
+    """Return HA device class string for a sensor key, or None.
+
+    Power keywords are checked first because 'energy_rate' also contains 'energy'.
+    Returns 'power' or 'energy' as strings; sensor.py converts to SensorDeviceClass.
+    """
+    if any(kw in key for kw in POWER_SENSOR_KEYWORDS):
+        return "power"
+    if ENERGY_SENSOR_KEYWORD in key and "percent" not in key:
+        return "energy"
+    return None
+
+
 def _get_unit_for_key(key: str) -> str | None:
     """Get an appropriate unit for a sensor key."""
+    # Energy/power fields override DEFAULT_UNITS
+    device_class = _get_device_class_for_key(key)
+    if device_class == "energy":
+        return FE_ENERGY_UNIT
+    if device_class == "power":
+        return FE_POWER_UNIT
+
     if key in DEFAULT_UNITS:
         return DEFAULT_UNITS[key]
     for keyword, unit in DEFAULT_UNITS.items():

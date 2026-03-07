@@ -39,6 +39,10 @@ DEFAULT_ICONS = {
     "max_players": "mdi:account-multiple",
     "tps": "mdi:speedometer",
     "mspt": "mdi:timer",
+    "energy": "mdi:lightning-bolt",
+    "max_energy": "mdi:lightning-bolt",
+    "energy_rate": "mdi:lightning-bolt-circle",
+    "transfer_rate": "mdi:transfer",
     "memory": "mdi:memory",
     "memory_used": "mdi:memory",
     "memory_max": "mdi:memory",
@@ -77,6 +81,19 @@ DEFAULT_ICONS = {
 
 # Default icon for unknown sensors
 DEFAULT_ICON = "mdi:minecraft"
+
+# ── Energy sensor classification ──────────────────────────────────────────────
+# Keys containing any of these substrings are treated as power (FE/s → W).
+# Checked BEFORE energy keywords because "energy_rate" also contains "energy".
+POWER_SENSOR_KEYWORDS = ("energy_rate", "transfer_rate")
+
+# Keys containing "energy" (and not a power keyword or percent) → energy device class.
+ENERGY_SENSOR_KEYWORD = "energy"
+
+# 1 FE is treated as 1 Wh, 1 FE/s as 1 W.
+# This is the standard community mapping that makes HA's energy dashboard work.
+FE_ENERGY_UNIT = "Wh"
+FE_POWER_UNIT  = "W"
 
 # Units based on common Minecraft data
 DEFAULT_UNITS = {

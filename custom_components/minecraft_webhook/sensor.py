@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
@@ -114,6 +115,14 @@ class MinecraftSensor(SensorEntity):
         self._attr_name = sensor_key.replace("_", " ").title()
         self._attr_icon = sensor_info.get("icon", "mdi:minecraft")
         self._attr_native_unit_of_measurement = sensor_info.get("unit")
+
+        # Apply device class for energy / power sensors
+        device_class_str = sensor_info.get("device_class")
+        if device_class_str:
+            try:
+                self._attr_device_class = SensorDeviceClass(device_class_str)
+            except ValueError:
+                pass  # unknown class string — leave unset
 
         # Set state class for numeric sensors
         if sensor_info["type"] == SENSOR_TYPE_NUMBER:
