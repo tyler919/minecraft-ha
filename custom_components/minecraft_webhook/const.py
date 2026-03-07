@@ -12,6 +12,11 @@ DATA_SENSORS = "sensors"
 DATA_COORDINATOR = "coordinator"
 DATA_COMMANDS = "commands"
 DATA_COMPUTERS = "computers"
+DATA_CLEANUP_CANCEL = "cleanup_cancel"
+
+# Stale sensor cleanup
+STALE_SENSOR_HOURS = 24
+PROTECTED_LABEL = "never"
 
 # Webhook
 WEBHOOK_PATH = "/api/webhook/minecraft_{webhook_id}"

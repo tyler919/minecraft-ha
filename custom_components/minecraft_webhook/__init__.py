@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from aiohttp import web
@@ -14,12 +14,15 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 import voluptuous as vol
 
 from .const import (
     CONF_SERVER_NAME,
     CONF_WEBHOOK_ID,
+    DATA_CLEANUP_CANCEL,
     DATA_COMMANDS,
     DATA_COMPUTERS,
     DATA_SENSORS,
@@ -28,10 +31,12 @@ from .const import (
     DEFAULT_ICONS,
     DEFAULT_UNITS,
     DOMAIN,
+    PROTECTED_LABEL,
     SENSOR_TYPE_BOOLEAN,
     SENSOR_TYPE_LIST,
     SENSOR_TYPE_NUMBER,
     SENSOR_TYPE_STRING,
+    STALE_SENSOR_HOURS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -112,6 +117,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_COMMAND):
         await _async_register_services(hass)
 
+    # Register stale sensor cleanup task (only once across all entries)
+    if DATA_CLEANUP_CANCEL not in hass.data[DOMAIN]:
+        hass.data[DOMAIN][DATA_CLEANUP_CANCEL] = async_track_time_interval(
+            hass,
+            lambda now: hass.async_create_task(_async_cleanup_stale_sensors(hass)),
+            timedelta(hours=1),
+        )
+        _LOGGER.debug("Registered stale sensor cleanup task (runs every hour)")
+
     return True
 
 
@@ -126,9 +140,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        # Clean up data
         hass.data[DOMAIN][DATA_SERVERS].pop(entry.entry_id, None)
         hass.data[DOMAIN][DATA_SENSORS].pop(entry.entry_id, None)
+
+        # Cancel cleanup task when no servers remain
+        if not hass.data[DOMAIN][DATA_SERVERS]:
+            cancel = hass.data[DOMAIN].pop(DATA_CLEANUP_CANCEL, None)
+            if cancel:
+                cancel()
+                _LOGGER.debug("Cancelled stale sensor cleanup task")
 
     return unload_ok
 
@@ -424,12 +444,14 @@ async def _process_webhook_data(
                 "unit": _get_unit_for_key(sensor_key),
                 "attributes": sensor_data.get("raw"),
                 "computer_id": computer_id,
+                "last_seen": datetime.now(),
             }
             new_sensors.append(sensor_key)
             _LOGGER.info("Discovered new sensor: %s", sensor_key)
         else:
             sensors[sensor_key]["value"] = sensor_data["value"]
             sensors[sensor_key]["attributes"] = sensor_data.get("raw")
+            sensors[sensor_key]["last_seen"] = datetime.now()
 
     if new_sensors:
         async_dispatcher_send(
@@ -442,6 +464,62 @@ async def _process_webhook_data(
         hass,
         SIGNAL_SENSOR_UPDATE.format(server_id=entry_id),
     )
+
+
+async def _async_cleanup_stale_sensors(hass: HomeAssistant) -> None:
+    """Delete sensors that haven't received data in 24+ hours.
+
+    Sensors with the HA label 'never' are permanently protected from deletion.
+    """
+    entity_reg = er.async_get(hass)
+    cutoff = datetime.now() - timedelta(hours=STALE_SENSOR_HOURS)
+
+    for entry_id, sensors in hass.data[DOMAIN][DATA_SENSORS].items():
+        keys_to_remove = []
+
+        for sensor_key, sensor_data in sensors.items():
+            last_seen = sensor_data.get("last_seen")
+
+            # Skip sensors that have never been updated (just created)
+            if last_seen is None:
+                continue
+
+            # Skip sensors that are still fresh
+            if last_seen >= cutoff:
+                continue
+
+            # Determine which platform this sensor lives on
+            platform = (
+                Platform.BINARY_SENSOR
+                if sensor_data.get("type") == SENSOR_TYPE_BOOLEAN
+                else Platform.SENSOR
+            )
+
+            unique_id = f"{DOMAIN}_{entry_id}_{sensor_key}"
+            entity_id = entity_reg.async_get_entity_id(platform, DOMAIN, unique_id)
+
+            if entity_id:
+                entity_entry = entity_reg.async_get(entity_id)
+                # Respect the 'never' label — skip protected sensors
+                if entity_entry and PROTECTED_LABEL in (entity_entry.labels or set()):
+                    _LOGGER.debug(
+                        "Skipping stale sensor %s (protected by '%s' label)",
+                        entity_id,
+                        PROTECTED_LABEL,
+                    )
+                    continue
+
+                entity_reg.async_remove(entity_id)
+                _LOGGER.info(
+                    "Removed stale sensor %s (no data for %d+ hours)",
+                    entity_id,
+                    STALE_SENSOR_HOURS,
+                )
+
+            keys_to_remove.append(sensor_key)
+
+        for key in keys_to_remove:
+            sensors.pop(key, None)
 
 
 def _get_icon_for_key(key: str) -> str:
