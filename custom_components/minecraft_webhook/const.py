@@ -18,6 +18,9 @@ DATA_CLEANUP_CANCEL = "cleanup_cancel"
 STALE_SENSOR_HOURS = 24
 PROTECTED_LABEL = "never"
 
+# Pause / ready signalling
+READY_DELAY_SECONDS = 30
+
 # Webhook
 WEBHOOK_PATH = "/api/webhook/minecraft_{webhook_id}"
 

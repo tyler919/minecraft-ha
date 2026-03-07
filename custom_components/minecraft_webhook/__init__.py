@@ -16,7 +16,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 import voluptuous as vol
 
 from .const import (
@@ -32,6 +32,7 @@ from .const import (
     DEFAULT_UNITS,
     DOMAIN,
     PROTECTED_LABEL,
+    READY_DELAY_SECONDS,
     SENSOR_TYPE_BOOLEAN,
     SENSOR_TYPE_LIST,
     SENSOR_TYPE_NUMBER,
@@ -126,12 +127,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         _LOGGER.debug("Registered stale sensor cleanup task (runs every hour)")
 
+    # After 30 seconds tell all known computers the integration is ready
+    @callback
+    def _send_ready(_now=None) -> None:
+        _queue_command_for_all(hass, entry.entry_id, "ready")
+        _LOGGER.info(
+            "Sent 'ready' signal to computers for server '%s'", server_name
+        )
+
+    async_call_later(hass, READY_DELAY_SECONDS, _send_ready)
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     webhook_id = entry.data[CONF_WEBHOOK_ID]
+    server_name = entry.data[CONF_SERVER_NAME]
+
+    # Tell all computers to pause before the webhook disappears
+    _queue_command_for_all(hass, entry.entry_id, "pause")
+    _LOGGER.info(
+        "Sent 'pause' signal to computers for server '%s'", server_name
+    )
 
     # Unregister webhook
     webhook.async_unregister(hass, webhook_id)
@@ -151,6 +169,35 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Cancelled stale sensor cleanup task")
 
     return unload_ok
+
+
+def _queue_command_for_all(
+    hass: HomeAssistant,
+    entry_id: str,
+    command: str,
+    data: dict | None = None,
+) -> None:
+    """Queue a command for every known computer on a server entry.
+
+    Falls back to 'default' if no computers have checked in yet.
+    """
+    computers = hass.data[DOMAIN][DATA_COMPUTERS].get(entry_id, {})
+    targets = list(computers.keys()) if computers else ["default"]
+
+    for computer_id in targets:
+        hass.data[DOMAIN][DATA_COMMANDS][entry_id][computer_id].append({
+            "type": "command",
+            "command": command,
+            "data": data or {},
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    _LOGGER.debug(
+        "Queued '%s' for %d computer(s) on entry %s",
+        command,
+        len(targets),
+        entry_id,
+    )
 
 
 async def _async_register_services(hass: HomeAssistant) -> None:
