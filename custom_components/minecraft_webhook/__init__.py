@@ -86,6 +86,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         webhook_id,
         _async_handle_webhook,
         allowed_methods=["GET", "POST"],
+        local_only=True,
     )
 
     _LOGGER.info(
