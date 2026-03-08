@@ -46,6 +46,7 @@ from .const import (
     SENSOR_TYPE_STRING,
     STALE_SENSOR_HOURS,
 )
+from .dashboard import async_regenerate_dashboard, async_remove_dashboard, async_setup_dashboard
 from .issue_reporter import GitHubIssueReporter
 
 DATA_ISSUE_REPORTER = "issue_reporter"
@@ -63,6 +64,7 @@ SIGNAL_NEW_COMPUTER = f"{DOMAIN}_new_computer_{{server_id}}"
 SERVICE_SEND_COMMAND = "send_command"
 SERVICE_SET_OUTPUT = "set_output"
 SERVICE_CLEAR_COMMANDS = "clear_commands"
+SERVICE_REGENERATE_DASHBOARD = "regenerate_dashboard"
 
 ATTR_SERVER = "server"
 ATTR_COMPUTER_ID = "computer_id"
@@ -157,6 +159,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async_call_later(hass, READY_DELAY_SECONDS, _send_ready)
 
+    # Create / register the per-server Lovelace dashboard
+    await async_setup_dashboard(hass, entry)
+
     return True
 
 
@@ -164,6 +169,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     webhook_id = entry.data[CONF_WEBHOOK_ID]
     server_name = entry.data[CONF_SERVER_NAME]
+
+    # Remove the Lovelace dashboard
+    await async_remove_dashboard(hass, entry)
 
     # Tell all computers to pause before the webhook disappears
     _queue_command_for_all(hass, entry.entry_id, "pause")
@@ -290,6 +298,33 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         else:
             hass.data[DOMAIN][DATA_COMMANDS][entry_id] = defaultdict(list)
             _LOGGER.debug("Cleared all commands for server %s", server)
+
+    async def async_regen_dashboard_service(call: ServiceCall) -> None:
+        """Regenerate the Lovelace dashboard for one or all server entries."""
+        server = call.data.get(ATTR_SERVER)
+        if server:
+            entry_id = _find_server_entry(hass, server)
+            if entry_id is None:
+                _LOGGER.error("regenerate_dashboard: server '%s' not found", server)
+                return
+            cfg_entry = hass.config_entries.async_get_entry(entry_id)
+            if cfg_entry:
+                await async_regenerate_dashboard(hass, cfg_entry)
+        else:
+            # Regenerate all servers
+            for entry_id in hass.data[DOMAIN][DATA_SERVERS]:
+                cfg_entry = hass.config_entries.async_get_entry(entry_id)
+                if cfg_entry:
+                    await async_regenerate_dashboard(hass, cfg_entry)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REGENERATE_DASHBOARD,
+        async_regen_dashboard_service,
+        schema=vol.Schema({
+            vol.Optional(ATTR_SERVER): cv.string,
+        }),
+    )
 
     # Register services with schemas
     hass.services.async_register(
