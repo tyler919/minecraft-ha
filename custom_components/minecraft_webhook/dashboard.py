@@ -257,14 +257,41 @@ async def async_setup_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None
     url_path = _dashboard_url_path(server_name)
     title = f"Minecraft — {server_name}"
 
-    # Register the dashboard entry in Lovelace
+    # Write the dashboard card config to storage first (works in all HA versions,
+    # picked up immediately when the dashboard URL is visited).
+    await async_regenerate_dashboard(hass, entry)
+
+    # Register the sidebar entry.  The Lovelace internal API has changed across
+    # HA versions, so we try in order of preference and fall back gracefully.
+    await _register_sidebar(hass, url_path, title)
+
+    # Schedule an automatic regeneration so the dashboard fills in once
+    # the first scan has arrived and all sensors are registered.
+    async_call_later(
+        hass,
+        _AUTO_REGEN_DELAY,
+        lambda _: hass.async_create_task(async_regenerate_dashboard(hass, entry)),
+    )
+
+
+async def _register_sidebar(hass: HomeAssistant, url_path: str, title: str) -> None:
+    """Add the dashboard to the Lovelace sidebar.
+
+    Tries three strategies in order:
+      1. DashboardsCollection.async_create_item()  — older HA, works immediately
+      2. Write to lovelace_dashboards storage      — all versions, needs HA restart
+      3. Log manual instructions                   — last resort
+    """
     lovelace = hass.data.get("lovelace")
-    if lovelace and hasattr(lovelace, "dashboards"):
-        dashboards = lovelace.dashboards
-        existing_paths = {item.get("url_path") for item in dashboards.async_items()}
-        if url_path not in existing_paths:
-            try:
-                await dashboards.async_create_item({
+    dashboards_obj = getattr(lovelace, "dashboards", None) if lovelace else None
+
+    # Strategy 1 — DashboardsCollection API (available when dashboards is not a plain dict)
+    if dashboards_obj is not None and hasattr(dashboards_obj, "async_create_item"):
+        try:
+            items_fn = getattr(dashboards_obj, "async_items", None)
+            existing = {item.get("url_path") for item in (items_fn() if items_fn else [])}
+            if url_path not in existing:
+                await dashboards_obj.async_create_item({
                     "require_admin": False,
                     "show_in_sidebar": True,
                     "icon": "mdi:minecraft",
@@ -272,30 +299,41 @@ async def async_setup_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None
                     "mode": "storage",
                     "url_path": url_path,
                 })
-                _LOGGER.info("Created Lovelace dashboard '/%s'", url_path)
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.warning(
-                    "Could not register dashboard '/%s': %s — "
-                    "restart HA after setup to make it appear in the sidebar.",
-                    url_path, exc,
-                )
-    else:
+                _LOGGER.info("Lovelace dashboard '/%s' registered (live).", url_path)
+            return
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("DashboardsCollection strategy failed: %s", exc)
+
+    # Strategy 2 — Write directly to the lovelace_dashboards registry storage.
+    # The entry will appear in the sidebar after the next HA restart.
+    try:
+        reg_store = Store(hass, 1, "lovelace_dashboards", minor_version=1)
+        registry = await reg_store.async_load() or {"items": []}
+        items: list[dict] = registry.setdefault("items", [])
+
+        if not any(item.get("url_path") == url_path for item in items):
+            items.append({
+                "id": url_path,          # url_path doubles as a stable unique id
+                "url_path": url_path,
+                "title": title,
+                "icon": "mdi:minecraft",
+                "show_in_sidebar": True,
+                "require_admin": False,
+                "mode": "storage",
+            })
+            await reg_store.async_save(registry)
+            _LOGGER.info(
+                "Lovelace dashboard '/%s' written to storage — "
+                "it will appear in the sidebar after the next HA restart.",
+                url_path,
+            )
+    except Exception as exc:  # noqa: BLE001
         _LOGGER.warning(
-            "Lovelace component not available — dashboard '/%s' was not registered. "
-            "Restart HA to trigger registration.",
-            url_path,
+            "Could not write dashboard registry: %s. "
+            "Add the dashboard manually: Settings → Dashboards → Add Dashboard, "
+            "set the URL path to '%s'.",
+            exc, url_path,
         )
-
-    # Write initial config (may be mostly empty until first scan)
-    await async_regenerate_dashboard(hass, entry)
-
-    # Schedule an automatic regeneration so the dashboard fills in once
-    # the first scan has arrived and sensors have been registered.
-    async_call_later(
-        hass,
-        _AUTO_REGEN_DELAY,
-        lambda _: hass.async_create_task(async_regenerate_dashboard(hass, entry)),
-    )
 
 
 async def async_regenerate_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -329,19 +367,31 @@ async def async_remove_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> Non
     server_name = entry.data[CONF_SERVER_NAME]
     url_path = _dashboard_url_path(server_name)
 
+    # Try live removal via DashboardsCollection API
     lovelace = hass.data.get("lovelace")
-    if lovelace and hasattr(lovelace, "dashboards"):
-        dashboards = lovelace.dashboards
-        for item in list(dashboards.async_items()):
-            if item.get("url_path") == url_path:
-                try:
-                    await dashboards.async_delete_item(item["id"])
+    dashboards_obj = getattr(lovelace, "dashboards", None) if lovelace else None
+    if dashboards_obj is not None and hasattr(dashboards_obj, "async_delete_item"):
+        try:
+            items_fn = getattr(dashboards_obj, "async_items", None)
+            for item in (items_fn() if items_fn else []):
+                if item.get("url_path") == url_path:
+                    await dashboards_obj.async_delete_item(item["id"])
                     _LOGGER.info("Removed Lovelace dashboard '/%s'", url_path)
-                except Exception as exc:  # noqa: BLE001
-                    _LOGGER.warning("Could not remove dashboard '/%s': %s", url_path, exc)
-                break
+                    break
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Live dashboard removal failed: %s", exc)
 
-    # Clear the storage file too
+    # Remove from the registry storage file
+    try:
+        reg_store = Store(hass, 1, "lovelace_dashboards", minor_version=1)
+        registry = await reg_store.async_load() or {"items": []}
+        items = registry.get("items", [])
+        registry["items"] = [i for i in items if i.get("url_path") != url_path]
+        await reg_store.async_save(registry)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Could not remove dashboard from registry storage: %s", exc)
+
+    # Remove the dashboard config storage file
     store = Store(hass, _STORAGE_VERSION, f"lovelace.{url_path}",
                   minor_version=_STORAGE_MINOR_VERSION)
     await store.async_remove()
