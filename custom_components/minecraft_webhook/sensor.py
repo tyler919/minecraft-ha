@@ -119,13 +119,20 @@ class MinecraftSensor(SensorEntity):
         # Setting a unit on a string sensor causes HA to reject non-numeric values.
         if sensor_info["type"] == SENSOR_TYPE_NUMBER:
             self._attr_native_unit_of_measurement = sensor_info.get("unit")
-            self._attr_state_class = SensorStateClass.MEASUREMENT
             device_class_str = sensor_info.get("device_class")
             if device_class_str:
                 try:
                     self._attr_device_class = SensorDeviceClass(device_class_str)
                 except ValueError:
                     pass  # unknown class string — leave unset
+
+            # HA rules for state_class:
+            #   energy  → only total / total_increasing / None are valid
+            #             (storage values go up AND down, so use None)
+            #   power   → measurement is correct
+            #   others  → measurement
+            if self._attr_device_class != SensorDeviceClass.ENERGY:
+                self._attr_state_class = SensorStateClass.MEASUREMENT
 
         device_id = sensor_info.get("device_id", entry.entry_id)
         self._attr_device_info = DeviceInfo(
