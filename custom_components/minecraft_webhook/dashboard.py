@@ -25,7 +25,7 @@ from collections import defaultdict
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
@@ -267,11 +267,11 @@ async def async_setup_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None
 
     # Schedule an automatic regeneration so the dashboard fills in once
     # the first scan has arrived and all sensors are registered.
-    async_call_later(
-        hass,
-        _AUTO_REGEN_DELAY,
-        lambda _: hass.async_create_task(async_regenerate_dashboard(hass, entry)),
-    )
+    @callback
+    def _schedule_regen(_now=None) -> None:
+        hass.async_create_task(async_regenerate_dashboard(hass, entry))
+
+    async_call_later(hass, _AUTO_REGEN_DELAY, _schedule_regen)
 
 
 async def _register_sidebar(hass: HomeAssistant, url_path: str, title: str) -> None:
