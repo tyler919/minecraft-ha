@@ -114,19 +114,18 @@ class MinecraftSensor(SensorEntity):
         self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{sensor_key}"
         self._attr_name = sensor_key.replace("_", " ").title()
         self._attr_icon = sensor_info.get("icon", "mdi:minecraft")
-        self._attr_native_unit_of_measurement = sensor_info.get("unit")
 
-        # Apply device class for energy / power sensors
-        device_class_str = sensor_info.get("device_class")
-        if device_class_str:
-            try:
-                self._attr_device_class = SensorDeviceClass(device_class_str)
-            except ValueError:
-                pass  # unknown class string — leave unset
-
-        # Set state class for numeric sensors
+        # Unit, device class, and state class are only meaningful for numeric sensors.
+        # Setting a unit on a string sensor causes HA to reject non-numeric values.
         if sensor_info["type"] == SENSOR_TYPE_NUMBER:
+            self._attr_native_unit_of_measurement = sensor_info.get("unit")
             self._attr_state_class = SensorStateClass.MEASUREMENT
+            device_class_str = sensor_info.get("device_class")
+            if device_class_str:
+                try:
+                    self._attr_device_class = SensorDeviceClass(device_class_str)
+                except ValueError:
+                    pass  # unknown class string — leave unset
 
         device_id = sensor_info.get("device_id", entry.entry_id)
         self._attr_device_info = DeviceInfo(

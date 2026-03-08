@@ -755,8 +755,9 @@ def _get_icon_for_key(key: str) -> str:
     """Get an appropriate icon for a sensor key."""
     if key in DEFAULT_ICONS:
         return DEFAULT_ICONS[key]
+    padded = f"_{key}_"
     for keyword, icon in DEFAULT_ICONS.items():
-        if keyword in key:
+        if f"_{keyword}_" in padded:
             return icon
     return DEFAULT_ICON
 
@@ -785,8 +786,11 @@ def _get_unit_for_key(key: str) -> str | None:
 
     if key in DEFAULT_UNITS:
         return DEFAULT_UNITS[key]
+    # Use underscore word-boundary matching so short keywords like "x"/"y"/"z"
+    # never accidentally match inside longer keys (e.g. "y" inside "back_type").
+    padded = f"_{key}_"
     for keyword, unit in DEFAULT_UNITS.items():
-        if keyword in key:
+        if f"_{keyword}_" in padded:
             return unit
     return None
 
