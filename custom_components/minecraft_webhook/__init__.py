@@ -52,11 +52,12 @@ DATA_ISSUE_REPORTER = "issue_reporter"
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 # Signal for sensor updates
 SIGNAL_SENSOR_UPDATE = f"{DOMAIN}_sensor_update_{{server_id}}"
 SIGNAL_NEW_SENSOR = f"{DOMAIN}_new_sensor_{{server_id}}"
+SIGNAL_NEW_COMPUTER = f"{DOMAIN}_new_computer_{{server_id}}"
 
 # Service constants
 SERVICE_SEND_COMMAND = "send_command"
@@ -432,11 +433,33 @@ async def _handle_post_data(
     hass.data[DOMAIN][DATA_SERVERS][entry_id]["last_update"] = datetime.now()
     hass.data[DOMAIN][DATA_SERVERS][entry_id]["data"] = data
 
-    # Track computer
+    # Track computer — register a per-computer HA device on first contact
     if entry_id not in hass.data[DOMAIN][DATA_COMPUTERS]:
         hass.data[DOMAIN][DATA_COMPUTERS][entry_id] = {}
-    if computer_id not in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]:
+
+    is_new_computer = computer_id not in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]
+    if is_new_computer:
         hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id] = {"outputs": {}}
+
+        # Register a child device for this computer under the server hub device
+        device_registry = dr.async_get(hass)
+        device_registry.async_get_or_create(
+            config_entry_id=entry_id,
+            identifiers={(DOMAIN, f"{entry_id}_{computer_id}")},
+            name=f"{computer_id.replace('_', ' ').title()}",
+            manufacturer="CC: Tweaked",
+            model="ComputerCraft Computer",
+            via_device=(DOMAIN, entry_id),
+        )
+        _LOGGER.info("Registered new computer device: %s", computer_id)
+
+        # Notify button/sensor platforms that a new computer appeared
+        async_dispatcher_send(
+            hass,
+            SIGNAL_NEW_COMPUTER.format(server_id=entry_id),
+            computer_id,
+        )
+
     hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id]["last_seen"] = datetime.now()
 
     # Process the data and create/update sensors
@@ -471,18 +494,72 @@ async def _process_webhook_data(
     computer_id: str,
     data: dict[str, Any],
 ) -> None:
-    """Process webhook data and create/update sensors."""
+    """Process webhook data and create/update sensors.
+
+    Device hierarchy built here:
+        Server (entry) → Computer (computer_id) → Peripheral (*_type keys) → Sensors
+    """
     sensors = hass.data[DOMAIN][DATA_SENSORS][entry_id]
     new_sensors = []
+    is_delta = data.pop("_delta", False)
 
-    # Add computer_id prefix if not default
+    # For delta payloads, refresh last_seen for all sensors of this computer
+    # so the stale-sensor cleanup doesn't remove unchanged sensors.
+    if is_delta:
+        now = datetime.now()
+        for sensor_data in sensors.values():
+            if sensor_data.get("computer_id") == computer_id:
+                sensor_data["last_seen"] = now
+
+    # ── Peripheral discovery ──────────────────────────────────────────────
+    # The scanner sends  <periph_name>_type = "<periph_type>"  for every
+    # connected peripheral.  Extract these to build the peripheral map and
+    # register one HA device per peripheral under the computer device.
+    periph_map: dict[str, str] = {}   # periph_name → periph_type
+    for key, value in data.items():
+        if key.endswith("_type") and isinstance(value, str) and not key.startswith("_"):
+            pname = key[:-5]          # strip trailing "_type"
+            if pname:
+                periph_map[pname] = value
+
+    computer_device_id = f"{entry_id}_{computer_id}"
+    periph_device_ids: dict[str, str] = {}   # periph_name → device_id string
+
+    if periph_map:
+        device_reg = dr.async_get(hass)
+        for pname, ptype in periph_map.items():
+            periph_device_id = f"{entry_id}_{computer_id}_{pname}"
+            periph_device_ids[pname] = periph_device_id
+            device_reg.async_get_or_create(
+                config_entry_id=entry_id,
+                identifiers={(DOMAIN, periph_device_id)},
+                name=pname.replace("_", " ").title(),
+                model=ptype.replace("_", " ").title(),
+                via_device=(DOMAIN, computer_device_id),
+            )
+        _LOGGER.debug(
+            "Registered %d peripheral device(s) for computer '%s'",
+            len(periph_map),
+            computer_id,
+        )
+
+    # Map a raw (no-computer-prefix) sensor key to the correct device.
+    # Longest prefixes are checked first to avoid "left" matching "left_extra_*".
+    _sorted_periphs = sorted(periph_device_ids, key=len, reverse=True)
+
+    def _device_id_for_raw_key(raw_key: str) -> str:
+        for pname in _sorted_periphs:
+            if raw_key == f"{pname}_type" or raw_key.startswith(f"{pname}_"):
+                return periph_device_ids[pname]
+        return computer_device_id
+
+    # ── Flatten and store sensors ─────────────────────────────────────────
     prefix = f"{computer_id}_" if computer_id != "default" else ""
 
     def flatten_data(d: dict[str, Any], parent_key: str = "") -> dict[str, Any]:
         """Flatten nested dictionary."""
         items = {}
         for key, value in d.items():
-            # Skip internal keys
             if key.startswith("_"):
                 continue
 
@@ -497,27 +574,35 @@ async def _process_webhook_data(
                     "value": len(value),
                     "type": SENSOR_TYPE_LIST,
                     "raw": value,
+                    "_raw_key": new_key,
                 }
             elif isinstance(value, bool):
                 items[full_key] = {
                     "value": value,
                     "type": SENSOR_TYPE_BOOLEAN,
+                    "_raw_key": new_key,
                 }
             elif isinstance(value, (int, float)):
                 items[full_key] = {
                     "value": value,
                     "type": SENSOR_TYPE_NUMBER,
+                    "_raw_key": new_key,
                 }
             else:
                 items[full_key] = {
                     "value": str(value) if value is not None else None,
                     "type": SENSOR_TYPE_STRING,
+                    "_raw_key": new_key,
                 }
         return items
 
     flat_data = flatten_data(data)
 
+    now = datetime.now()
     for sensor_key, sensor_data in flat_data.items():
+        raw_key = sensor_data.pop("_raw_key", sensor_key[len(prefix):])
+        device_id = _device_id_for_raw_key(raw_key)
+
         if sensor_key not in sensors:
             sensors[sensor_key] = {
                 "key": sensor_key,
@@ -528,14 +613,16 @@ async def _process_webhook_data(
                 "device_class": _get_device_class_for_key(sensor_key),
                 "attributes": sensor_data.get("raw"),
                 "computer_id": computer_id,
-                "last_seen": datetime.now(),
+                "device_id": device_id,
+                "last_seen": now,
             }
             new_sensors.append(sensor_key)
-            _LOGGER.info("Discovered new sensor: %s", sensor_key)
+            _LOGGER.info("Discovered new sensor: %s (device: %s)", sensor_key, device_id)
         else:
             sensors[sensor_key]["value"] = sensor_data["value"]
             sensors[sensor_key]["attributes"] = sensor_data.get("raw")
-            sensors[sensor_key]["last_seen"] = datetime.now()
+            sensors[sensor_key]["device_id"] = device_id  # update if peripheral reconnected
+            sensors[sensor_key]["last_seen"] = now
 
     if new_sensors:
         async_dispatcher_send(

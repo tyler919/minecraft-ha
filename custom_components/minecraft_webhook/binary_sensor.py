@@ -127,8 +127,9 @@ class MinecraftBinarySensor(BinarySensorEntity):
                 self._attr_device_class = device_class
                 break
 
+        device_id = sensor_info.get("device_id", entry.entry_id)
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
+            identifiers={(DOMAIN, device_id)},
         )
 
     async def async_added_to_hass(self) -> None:
