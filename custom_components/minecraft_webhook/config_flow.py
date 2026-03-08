@@ -12,6 +12,8 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ERROR_REPORTING,
+    CONF_GITHUB_TOKEN,
     CONF_SERVER_NAME,
     CONF_WEBHOOK_ID,
     DOMAIN,
@@ -88,13 +90,30 @@ class MinecraftWebhookOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # Get webhook URL
-        webhook_id = self.config_entry.data.get(CONF_WEBHOOK_ID, "")
+        # Current saved values (defaults for the form)
+        current_reporting = self.config_entry.options.get(CONF_ERROR_REPORTING, False)
+        current_token     = self.config_entry.options.get(CONF_GITHUB_TOKEN, "")
+
+        # Get webhook URL for display
+        webhook_id  = self.config_entry.data.get(CONF_WEBHOOK_ID, "")
         webhook_url = webhook.async_generate_url(self.hass, webhook_id)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ERROR_REPORTING, default=current_reporting
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_GITHUB_TOKEN, default=current_token
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                }
+            ),
             description_placeholders={
                 "webhook_url": webhook_url,
                 "webhook_id": webhook_id,

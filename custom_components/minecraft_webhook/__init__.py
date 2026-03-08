@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
@@ -20,6 +21,8 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 import voluptuous as vol
 
 from .const import (
+    CONF_ERROR_REPORTING,
+    CONF_GITHUB_TOKEN,
     CONF_SERVER_NAME,
     CONF_WEBHOOK_ID,
     DATA_CLEANUP_CANCEL,
@@ -43,6 +46,9 @@ from .const import (
     SENSOR_TYPE_STRING,
     STALE_SENSOR_HOURS,
 )
+from .issue_reporter import GitHubIssueReporter
+
+DATA_ISSUE_REPORTER = "issue_reporter"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +79,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_COMMANDS: defaultdict(lambda: defaultdict(list)),
         DATA_COMPUTERS: defaultdict(dict),
     })
+
+    # Initialise the auto error reporter (opt-in via options)
+    if entry.options.get(CONF_ERROR_REPORTING) and entry.options.get(CONF_GITHUB_TOKEN):
+        hass.data[DOMAIN][DATA_ISSUE_REPORTER] = GitHubIssueReporter(
+            entry.options[CONF_GITHUB_TOKEN]
+        )
+        _LOGGER.info("Auto error reporting enabled for Minecraft Webhook")
+    else:
+        hass.data[DOMAIN].setdefault(DATA_ISSUE_REPORTER, None)
 
     server_name = entry.data[CONF_SERVER_NAME]
     webhook_id = entry.data[CONF_WEBHOOK_ID]
@@ -164,6 +179,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN][DATA_SERVERS].pop(entry.entry_id, None)
         hass.data[DOMAIN][DATA_SENSORS].pop(entry.entry_id, None)
+
+        # Close the issue reporter HTTP session
+        reporter = hass.data[DOMAIN].get(DATA_ISSUE_REPORTER)
+        if reporter:
+            await reporter.close()
+            hass.data[DOMAIN][DATA_ISSUE_REPORTER] = None
 
         # Cancel cleanup task when no servers remain
         if not hass.data[DOMAIN][DATA_SERVERS]:
@@ -389,8 +410,12 @@ async def _handle_post_data(
     """Handle POST request - receive data from CC: Tweaked."""
     try:
         data = await request.json()
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         _LOGGER.error("Received invalid JSON from Minecraft webhook")
+        await _report_error(
+            hass, "InvalidJSON", str(exc), traceback.format_exc(),
+            {"server": server_name},
+        )
         return web.Response(status=400, text="Invalid JSON")
 
     # Extract computer_id if provided
@@ -415,7 +440,14 @@ async def _handle_post_data(
     hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id]["last_seen"] = datetime.now()
 
     # Process the data and create/update sensors
-    await _process_webhook_data(hass, entry_id, computer_id, data)
+    try:
+        await _process_webhook_data(hass, entry_id, computer_id, data)
+    except Exception as exc:
+        _LOGGER.error("Error processing webhook data from %s: %s", computer_id, exc)
+        await _report_error(
+            hass, "WebhookProcessingError", str(exc), traceback.format_exc(),
+            {"computer_id": computer_id, "server": server_name},
+        )
 
     # Return any pending commands immediately
     commands = hass.data[DOMAIN][DATA_COMMANDS][entry_id].get(computer_id, [])
@@ -572,6 +604,29 @@ async def _async_cleanup_stale_sensors(hass: HomeAssistant) -> None:
 
         for key in keys_to_remove:
             sensors.pop(key, None)
+
+
+async def _report_error(
+    hass: HomeAssistant,
+    error_type: str,
+    error_message: str,
+    error_traceback: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Forward an error to GitHub if the reporter is configured."""
+    try:
+        reporter: GitHubIssueReporter | None = hass.data.get(DOMAIN, {}).get(DATA_ISSUE_REPORTER)
+        if reporter:
+            info = extra or {}
+            info["ha_version"] = hass.config.version
+            await reporter.report_error(
+                error_type=error_type,
+                error_message=error_message,
+                tb=error_traceback,
+                extra=info,
+            )
+    except Exception as exc:
+        _LOGGER.debug("Failed to forward error to GitHub reporter: %s", exc)
 
 
 def _get_icon_for_key(key: str) -> str:

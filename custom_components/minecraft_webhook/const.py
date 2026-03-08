@@ -2,9 +2,15 @@
 
 DOMAIN = "minecraft_webhook"
 
+# GitHub repo for auto error reporting
+GITHUB_REPO_OWNER = "tyler919"
+GITHUB_REPO_NAME  = "minecraft-ha"
+
 # Configuration
-CONF_SERVER_NAME = "server_name"
-CONF_WEBHOOK_ID = "webhook_id"
+CONF_SERVER_NAME     = "server_name"
+CONF_WEBHOOK_ID      = "webhook_id"
+CONF_ERROR_REPORTING = "error_reporting"
+CONF_GITHUB_TOKEN    = "github_token"
 
 # Data storage keys
 DATA_SERVERS = "servers"
