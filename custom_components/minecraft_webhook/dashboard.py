@@ -259,8 +259,8 @@ async def async_setup_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None
 
     # Register the dashboard entry in Lovelace
     lovelace = hass.data.get("lovelace")
-    if lovelace and "dashboards" in lovelace:
-        dashboards = lovelace["dashboards"]
+    if lovelace and hasattr(lovelace, "dashboards"):
+        dashboards = lovelace.dashboards
         existing_paths = {item.get("url_path") for item in dashboards.async_items()}
         if url_path not in existing_paths:
             try:
@@ -330,8 +330,8 @@ async def async_remove_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> Non
     url_path = _dashboard_url_path(server_name)
 
     lovelace = hass.data.get("lovelace")
-    if lovelace and "dashboards" in lovelace:
-        dashboards = lovelace["dashboards"]
+    if lovelace and hasattr(lovelace, "dashboards"):
+        dashboards = lovelace.dashboards
         for item in list(dashboards.async_items()):
             if item.get("url_path") == url_path:
                 try:
