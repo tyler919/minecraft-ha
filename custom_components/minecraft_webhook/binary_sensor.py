@@ -129,9 +129,6 @@ class MinecraftBinarySensor(BinarySensorEntity):
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name=f"Minecraft - {server_name}",
-            manufacturer="Minecraft",
-            model="Java Edition Server",
         )
 
     async def async_added_to_hass(self) -> None:

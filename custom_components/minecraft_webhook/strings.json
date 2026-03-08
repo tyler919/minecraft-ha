@@ -3,12 +3,12 @@
     "step": {
       "user": {
         "title": "Add Minecraft Server",
-        "description": "Set up a new Minecraft server to receive webhook data.\n\nAfter setup, you'll get a webhook URL to configure in your Minecraft mod.",
+        "description": "Set up a new Minecraft server to receive webhook data.\n\nThis integration is designed to work with **CC: Tweaked** computers in Minecraft using the [minecraft-ha-cc](https://github.com/tyler919/minecraft-ha-cc) companion scripts. Any system that can send HTTP POST requests with JSON will also work.\n\nAfter setup you will get a webhook URL to paste into the scanner setup wizard.",
         "data": {
           "server_name": "Server Name"
         },
         "data_description": {
-          "server_name": "A friendly name for this Minecraft server (e.g., 'Survival', 'Creative', 'SMP')"
+          "server_name": "A friendly name for this Minecraft server (e.g. 'Survival', 'Creative')"
         }
       }
     },
@@ -23,7 +23,15 @@
     "step": {
       "init": {
         "title": "Minecraft Server Configuration",
-        "description": "**Webhook URL:**\n`{webhook_url}`\n\nConfigure your Minecraft mod to send POST requests to this URL with JSON data.\n\n**Webhook ID:** `{webhook_id}`"
+        "description": "**Webhook URL:**\n`{webhook_url}`\n\nPaste this URL into your CC: Tweaked scanner setup wizard, or configure any other HTTP client to POST JSON to it.\n\n**Webhook ID:** `{webhook_id}`",
+        "data": {
+          "error_reporting": "Enable Auto Error Reporting",
+          "github_token": "GitHub Personal Access Token"
+        },
+        "data_description": {
+          "error_reporting": "Automatically open a GitHub issue on the minecraft-ha repo when the integration encounters an unexpected error. Requires a GitHub token below.",
+          "github_token": "A GitHub PAT with 'public_repo' scope used to create issues automatically. Leave blank if error reporting is disabled."
+        }
       }
     }
   }
