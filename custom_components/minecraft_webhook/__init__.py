@@ -140,11 +140,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_SEND_COMMAND):
         await _async_register_services(hass)
 
-    # Register stale sensor cleanup task (only once across all entries)
+    # Register stale sensor cleanup task (only once across all entries).
+    # The callback must be `async` so HA invokes it directly on the event
+    # loop. The previous sync lambda was being scheduled into an executor
+    # thread, and calling `hass.async_create_task` from a non-loop thread
+    # is not thread-safe (HA 2024+ raises RuntimeError at startup).
     if DATA_CLEANUP_CANCEL not in hass.data[DOMAIN]:
+        async def _async_cleanup_callback(_now: datetime) -> None:
+            await _async_cleanup_stale_sensors(hass)
+
         hass.data[DOMAIN][DATA_CLEANUP_CANCEL] = async_track_time_interval(
             hass,
-            lambda now: hass.async_create_task(_async_cleanup_stale_sensors(hass)),
+            _async_cleanup_callback,
             timedelta(hours=1),
         )
         _LOGGER.debug("Registered stale sensor cleanup task (runs every hour)")
@@ -546,7 +553,7 @@ async def _process_webhook_data(
             if sensor_data.get("computer_id") == computer_id:
                 sensor_data["last_seen"] = now
 
-    # ── Peripheral discovery ──────────────────────────────────────────────
+    # ── Peripheral discovery ────────────────────────────────────────────
     # The scanner sends  <periph_name>_type = "<periph_type>"  for every
     # connected peripheral.  Extract these to build the peripheral map and
     # register one HA device per peripheral under the computer device.
@@ -588,7 +595,7 @@ async def _process_webhook_data(
                 return periph_device_ids[pname]
         return computer_device_id
 
-    # ── Flatten and store sensors ─────────────────────────────────────────
+    # ── Flatten and store sensors ────────────────────────────────────────
     prefix = f"{computer_id}_" if computer_id != "default" else ""
 
     def flatten_data(d: dict[str, Any], parent_key: str = "") -> dict[str, Any]:
