@@ -23,15 +23,7 @@
     "step": {
       "init": {
         "title": "Minecraft Server Configuration",
-        "description": "**Webhook URL:**\n`{webhook_url}`\n\nPaste this URL into your CC: Tweaked scanner setup wizard, or configure any other HTTP client to POST JSON to it.\n\n**Webhook ID:** `{webhook_id}`",
-        "data": {
-          "error_reporting": "Enable Auto Error Reporting",
-          "github_token": "GitHub Personal Access Token"
-        },
-        "data_description": {
-          "error_reporting": "Automatically open a GitHub issue on the minecraft-ha repo when the integration encounters an unexpected error. Requires a GitHub token below.",
-          "github_token": "A GitHub PAT with 'public_repo' scope used to create issues automatically. Leave blank if error reporting is disabled."
-        }
+        "description": "**Webhook URL:**\n`{webhook_url}`\n\nPaste this URL into your CC: Tweaked scanner setup wizard, or configure any other HTTP client to POST JSON to it.\n\n**Webhook ID:** `{webhook_id}`"
       }
     }
   }
