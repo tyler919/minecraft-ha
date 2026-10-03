@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
@@ -21,8 +20,6 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 import voluptuous as vol
 
 from .const import (
-    CONF_ERROR_REPORTING,
-    CONF_GITHUB_TOKEN,
     CONF_SERVER_NAME,
     CONF_WEBHOOK_ID,
     DATA_CLEANUP_CANCEL,
@@ -37,6 +34,11 @@ from .const import (
     ENERGY_SENSOR_KEYWORD,
     FE_ENERGY_UNIT,
     FE_POWER_UNIT,
+    LEGACY_REPORTER_OPTIONS,
+    MAX_COMPUTER_ID_LENGTH,
+    MAX_COMPUTERS_PER_SERVER,
+    MAX_PERIPHERALS_PER_COMPUTER,
+    MAX_SENSORS_PER_COMPUTER,
     POWER_SENSOR_KEYWORDS,
     PROTECTED_LABEL,
     READY_DELAY_SECONDS,
@@ -47,11 +49,10 @@ from .const import (
     STALE_SENSOR_HOURS,
 )
 from .dashboard import async_regenerate_dashboard, async_remove_dashboard, async_setup_dashboard
-from .issue_reporter import GitHubIssueReporter
-
-DATA_ISSUE_REPORTER = "issue_reporter"
-
 _LOGGER = logging.getLogger(__name__)
+
+# Server entries already warned about hitting the computer cap (warn once)
+_COMPUTER_CAP_WARNED: set[str] = set()
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
@@ -83,14 +84,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_COMPUTERS: defaultdict(dict),
     })
 
-    # Initialise the auto error reporter (opt-in via options)
-    if entry.options.get(CONF_ERROR_REPORTING) and entry.options.get(CONF_GITHUB_TOKEN):
-        hass.data[DOMAIN][DATA_ISSUE_REPORTER] = GitHubIssueReporter(
-            entry.options[CONF_GITHUB_TOKEN]
+    # The built-in GitHub reporter was removed (use gh_issue_reporter instead).
+    # Drop its stored options so the old PAT doesn't linger in .storage.
+    if any(key in entry.options for key in LEGACY_REPORTER_OPTIONS):
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                k: v for k, v in entry.options.items()
+                if k not in LEGACY_REPORTER_OPTIONS
+            },
         )
-        _LOGGER.info("Auto error reporting enabled for Minecraft Webhook")
-    else:
-        hass.data[DOMAIN].setdefault(DATA_ISSUE_REPORTER, None)
+        _LOGGER.info("Removed legacy GitHub error-reporting options")
 
     server_name = entry.data[CONF_SERVER_NAME]
     webhook_id = entry.data[CONF_WEBHOOK_ID]
@@ -117,11 +121,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         local_only=True,
     )
 
-    _LOGGER.info(
-        "Registered webhook for Minecraft server '%s' at /api/webhook/%s",
-        server_name,
-        webhook_id,
-    )
+    _LOGGER.info("Registered webhook for Minecraft server '%s'", server_name)
+    _LOGGER.debug("Webhook path: /api/webhook/%s", webhook_id)
 
     # Register device
     device_registry = dr.async_get(hass)
@@ -195,12 +196,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN][DATA_SERVERS].pop(entry.entry_id, None)
         hass.data[DOMAIN][DATA_SENSORS].pop(entry.entry_id, None)
-
-        # Close the issue reporter HTTP session
-        reporter = hass.data[DOMAIN].get(DATA_ISSUE_REPORTER)
-        if reporter:
-            await reporter.close()
-            hass.data[DOMAIN][DATA_ISSUE_REPORTER] = None
 
         # Cancel cleanup task when no servers remain
         if not hass.data[DOMAIN][DATA_SERVERS]:
@@ -393,7 +388,7 @@ async def _async_handle_webhook(
             break
 
     if entry_id is None:
-        _LOGGER.error("Received webhook for unknown server: %s", webhook_id)
+        _LOGGER.error("Received webhook for an unknown server")
         return web.Response(status=404, text="Server not found")
 
     # Handle GET request - return pending commands
@@ -453,16 +448,17 @@ async def _handle_post_data(
     """Handle POST request - receive data from CC: Tweaked."""
     try:
         data = await request.json()
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, json.JSONDecodeError):
         _LOGGER.error("Received invalid JSON from Minecraft webhook")
-        await _report_error(
-            hass, "InvalidJSON", str(exc), traceback.format_exc(),
-            {"server": server_name},
-        )
         return web.Response(status=400, text="Invalid JSON")
 
+    if not isinstance(data, dict):
+        return web.Response(status=400, text="Expected a JSON object")
+
     # Extract computer_id if provided
-    computer_id = data.pop("_computer_id", data.pop("computer_id", "default"))
+    computer_id = str(data.pop("_computer_id", data.pop("computer_id", "default")))
+    if not computer_id or len(computer_id) > MAX_COMPUTER_ID_LENGTH:
+        return web.Response(status=400, text="Invalid computer_id")
 
     _LOGGER.debug(
         "Received data from computer '%s' on server '%s': %s",
@@ -480,6 +476,18 @@ async def _handle_post_data(
         hass.data[DOMAIN][DATA_COMPUTERS][entry_id] = {}
 
     is_new_computer = computer_id not in hass.data[DOMAIN][DATA_COMPUTERS][entry_id]
+    if is_new_computer and (
+        len(hass.data[DOMAIN][DATA_COMPUTERS][entry_id]) >= MAX_COMPUTERS_PER_SERVER
+    ):
+        if entry_id not in _COMPUTER_CAP_WARNED:
+            _COMPUTER_CAP_WARNED.add(entry_id)
+            _LOGGER.warning(
+                "Ignoring new computers on server '%s': limit of %d reached",
+                server_name,
+                MAX_COMPUTERS_PER_SERVER,
+            )
+        return web.Response(status=429, text="Too many computers")
+
     if is_new_computer:
         hass.data[DOMAIN][DATA_COMPUTERS][entry_id][computer_id] = {"outputs": {}}
 
@@ -509,10 +517,6 @@ async def _handle_post_data(
         await _process_webhook_data(hass, entry_id, computer_id, data)
     except Exception as exc:
         _LOGGER.error("Error processing webhook data from %s: %s", computer_id, exc)
-        await _report_error(
-            hass, "WebhookProcessingError", str(exc), traceback.format_exc(),
-            {"computer_id": computer_id, "server": server_name},
-        )
 
     # Return any pending commands immediately
     commands = hass.data[DOMAIN][DATA_COMMANDS][entry_id].get(computer_id, [])
@@ -562,6 +566,13 @@ async def _process_webhook_data(
         if key.endswith("_type") and isinstance(value, str) and not key.startswith("_"):
             pname = key[:-5]          # strip trailing "_type"
             if pname:
+                if len(periph_map) >= MAX_PERIPHERALS_PER_COMPUTER:
+                    _LOGGER.debug(
+                        "Computer '%s' sent more than %d peripherals; ignoring the rest",
+                        computer_id,
+                        MAX_PERIPHERALS_PER_COMPUTER,
+                    )
+                    break
                 periph_map[pname] = value
 
     computer_device_id = f"{entry_id}_{computer_id}"
@@ -641,11 +652,20 @@ async def _process_webhook_data(
     flat_data = flatten_data(data)
 
     now = datetime.now()
+    sensor_count = sum(
+        1 for s in sensors.values() if s.get("computer_id") == computer_id
+    )
+    already_capped = sensor_count >= MAX_SENSORS_PER_COMPUTER
+    capped = False
     for sensor_key, sensor_data in flat_data.items():
         raw_key = sensor_data.pop("_raw_key", sensor_key[len(prefix):])
         device_id = _device_id_for_raw_key(raw_key)
 
         if sensor_key not in sensors:
+            if sensor_count >= MAX_SENSORS_PER_COMPUTER:
+                capped = True
+                continue
+            sensor_count += 1
             sensors[sensor_key] = {
                 "key": sensor_key,
                 "type": sensor_data["type"],
@@ -665,6 +685,13 @@ async def _process_webhook_data(
             sensors[sensor_key]["attributes"] = sensor_data.get("raw")
             sensors[sensor_key]["device_id"] = device_id  # update if peripheral reconnected
             sensors[sensor_key]["last_seen"] = now
+
+    if capped and not already_capped:
+        _LOGGER.warning(
+            "Computer '%s' reached the limit of %d sensors; new keys ignored",
+            computer_id,
+            MAX_SENSORS_PER_COMPUTER,
+        )
 
     if new_sensors:
         async_dispatcher_send(
@@ -733,29 +760,6 @@ async def _async_cleanup_stale_sensors(hass: HomeAssistant) -> None:
 
         for key in keys_to_remove:
             sensors.pop(key, None)
-
-
-async def _report_error(
-    hass: HomeAssistant,
-    error_type: str,
-    error_message: str,
-    error_traceback: str | None = None,
-    extra: dict | None = None,
-) -> None:
-    """Forward an error to GitHub if the reporter is configured."""
-    try:
-        reporter: GitHubIssueReporter | None = hass.data.get(DOMAIN, {}).get(DATA_ISSUE_REPORTER)
-        if reporter:
-            info = extra or {}
-            info["ha_version"] = hass.config.version
-            await reporter.report_error(
-                error_type=error_type,
-                error_message=error_message,
-                tb=error_traceback,
-                extra=info,
-            )
-    except Exception as exc:
-        _LOGGER.debug("Failed to forward error to GitHub reporter: %s", exc)
 
 
 def _get_icon_for_key(key: str) -> str:

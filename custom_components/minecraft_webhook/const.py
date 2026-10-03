@@ -2,15 +2,11 @@
 
 DOMAIN = "minecraft_webhook"
 
-# GitHub repo for auto error reporting
-GITHUB_REPO_OWNER = "tyler919"
-GITHUB_REPO_NAME  = "minecraft-ha"
-
 # Configuration
 CONF_SERVER_NAME     = "server_name"
 CONF_WEBHOOK_ID      = "webhook_id"
-CONF_ERROR_REPORTING = "error_reporting"
-CONF_GITHUB_TOKEN    = "github_token"
+# Options left behind by the removed built-in GitHub reporter; scrubbed on setup
+LEGACY_REPORTER_OPTIONS = ("error_reporting", "github_token")
 
 # Data storage keys
 DATA_SERVERS = "servers"
@@ -23,6 +19,12 @@ DATA_CLEANUP_CANCEL = "cleanup_cancel"
 # Stale sensor cleanup
 STALE_SENSOR_HOURS = 24
 PROTECTED_LABEL = "never"
+
+# Caps so a caller holding the webhook ID can't flood the device/entity registry
+MAX_COMPUTERS_PER_SERVER     = 64
+MAX_PERIPHERALS_PER_COMPUTER = 64
+MAX_SENSORS_PER_COMPUTER     = 500
+MAX_COMPUTER_ID_LENGTH       = 64
 
 # Pause / ready signalling
 READY_DELAY_SECONDS = 30

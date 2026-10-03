@@ -48,8 +48,8 @@ Yes. The integration is a standard HA webhook receiver — it accepts any HTTP P
 - **Energy dashboard support** — Forge Energy (FE) values mapped to Wh/W so they appear in the HA energy dashboard
 - **Binary sensors** — boolean values (online, raining, etc.) become binary sensors automatically
 - **Stale sensor cleanup** — sensors that haven't reported in 24 hours are removed automatically (label a sensor `never` to protect it)
+- **Flood limits** — at most 64 computers per server, 64 peripherals and 500 sensors per computer
 - **Pause/ready handshake** — when the integration restarts, it signals computers to pause and resumes them when ready
-- **Auto error reporting** — optional: crashes in the integration automatically open a GitHub issue (requires a GitHub token)
 
 ---
 
@@ -192,20 +192,9 @@ To permanently protect a sensor from deletion, add the label **`never`** to it i
 
 ---
 
-## Auto Error Reporting (Optional)
+## Error Reporting
 
-The integration can automatically open a GitHub issue on this repo when it encounters an unexpected error.
-
-To enable:
-1. **Settings → Devices & Services → Minecraft Webhook → Configure**
-2. Toggle **Error Reporting** on
-3. Paste a GitHub Personal Access Token (needs `public_repo` scope)
-
-Features:
-- Issues are deduplicated by error hash — the same crash won't create duplicate issues
-- Rate limited to one issue per error type per hour
-- Issues are labelled `auto-reported` + `bug`
-- Completely opt-in; disabled by default
+The built-in GitHub reporter was removed in 1.4.1. Use [ha-gh-issue-reporter](https://github.com/tyler919/ha-gh-issue-reporter) instead, which covers every integration from one token. Any token saved in the old options is deleted from HA's storage the next time the integration loads.
 
 ---
 

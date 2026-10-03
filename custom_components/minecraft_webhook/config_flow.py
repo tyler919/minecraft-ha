@@ -11,13 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .const import (
-    CONF_ERROR_REPORTING,
-    CONF_GITHUB_TOKEN,
-    CONF_SERVER_NAME,
-    CONF_WEBHOOK_ID,
-    DOMAIN,
-)
+from .const import CONF_SERVER_NAME, CONF_WEBHOOK_ID, DOMAIN
 
 
 def _generate_webhook_id() -> str:
@@ -86,13 +80,9 @@ class MinecraftWebhookOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage the options."""
+        """Show the webhook URL. There are no editable options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        # Current saved values (defaults for the form)
-        current_reporting = self.config_entry.options.get(CONF_ERROR_REPORTING, False)
-        current_token     = self.config_entry.options.get(CONF_GITHUB_TOKEN, "")
+            return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
         # Get webhook URL for display
         webhook_id  = self.config_entry.data.get(CONF_WEBHOOK_ID, "")
@@ -100,20 +90,7 @@ class MinecraftWebhookOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_ERROR_REPORTING, default=current_reporting
-                    ): selector.BooleanSelector(),
-                    vol.Optional(
-                        CONF_GITHUB_TOKEN, default=current_token
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.PASSWORD,
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema({}),
             description_placeholders={
                 "webhook_url": webhook_url,
                 "webhook_id": webhook_id,
